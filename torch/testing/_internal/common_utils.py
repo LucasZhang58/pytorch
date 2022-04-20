@@ -71,6 +71,7 @@ from .composite_compliance import no_dispatch
 from torch.testing._internal.common_dtype import get_all_dtypes
 from torch.nn import ModuleList, ModuleDict, Sequential, ParameterList, ParameterDict
 from torch._C import ScriptList, ScriptDict  # type: ignore[attr-defined]
+from torch.utils._pytree import tree_map
 
 torch.backends.disable_global_flags()
 
@@ -807,10 +808,743 @@ def skipIfCrossRef(fn):
             fn(*args, **kwargs)
     return wrapper
 
+meta_exclude_set = {
+    # These happen so frequently, it's worth not continually running
+    # them
+    torch.Tensor.tolist, torch.Tensor.unbind, torch.Tensor.__repr__,
+    torch.Tensor.__deepcopy__, torch.Tensor.to, torch.Tensor.add_,
+    torch.Tensor.__getitem__, torch.Tensor.__setitem__, torch.Tensor.mul,
+    torch.Tensor.dtype.__get__, torch.Tensor.numpy, torch.Tensor.cpu,
+    torch.Tensor.layout.__get__, torch.Tensor.__bool__, torch.Tensor.dtype.__get__,
+    torch.Tensor.shape.__get__, torch.Tensor.is_complex,
+    torch.Tensor.add, torch.Tensor.requires_grad_, torch.Tensor.clone,
+    torch.Tensor.numel, torch.Tensor.device.__get__, torch.Tensor.grad.__get__,
+    torch.Tensor.copy_, torch.Tensor.reshape, torch.Tensor.size,
+    torch.Tensor.sub, torch.Tensor.gt, torch.Tensor.lt,
+    torch.Tensor.is_floating_point, torch.Tensor.detach, torch.rand,
+    torch.Tensor.sum, torch.Tensor.__format__, torch.Tensor.is_sparse.__get__,
+    torch.Tensor.div, torch.Tensor.__rsub__, torch.Tensor.item,
+    # These need to get implemented and are excluded for now
+    torch.Tensor.__contains__,
+    torch.Tensor.__float__,
+    torch.Tensor.__getitem__,
+    torch.Tensor.__index__,
+    torch.Tensor.__lshift__,
+    torch.Tensor.__reversed__,
+    torch.Tensor.__rmatmul__,
+    torch.Tensor.__rmod__,
+    torch.Tensor.__rshift__,
+    torch.Tensor.__rtruediv__,
+    torch.Tensor.abs,
+    torch.Tensor.abs_,
+    torch.Tensor.absolute,
+    torch.Tensor.absolute_,
+    torch.Tensor.acos_,
+    torch.Tensor.addbmm,
+    torch.Tensor.addbmm_,
+    torch.Tensor.addcdiv_,
+    torch.Tensor.addcmul_,
+    torch.Tensor.addmm_,
+    torch.Tensor.addmv_,
+    torch.Tensor.addr_,
+    torch.Tensor.allclose,
+    torch.Tensor.angle,
+    torch.Tensor.argsort,
+    torch.Tensor.argwhere,
+    torch.Tensor.asin_,
+    torch.Tensor.atan2_,
+    torch.Tensor.atan_,
+    torch.Tensor.backward,
+    torch.Tensor.baddbmm_,
+    torch.Tensor.bincount,
+    torch.Tensor.cholesky,
+    torch.Tensor.cholesky_inverse,
+    torch.Tensor.cholesky_solve,
+    torch.Tensor.clamp,
+    torch.Tensor.clamp_,
+    torch.Tensor.clip,
+    torch.Tensor.clip_,
+    torch.Tensor.conj_physical,
+    torch.Tensor.corrcoef,
+    torch.Tensor.cos_,
+    torch.Tensor.cosh_,
+    torch.Tensor.count_nonzero,
+    torch.Tensor.cov,
+    torch.Tensor.cummax,
+    torch.Tensor.cummin,
+    torch.Tensor.cumprod_,
+    torch.Tensor.det,
+    torch.Tensor.diag,
+    torch.Tensor.diagflat,
+    torch.Tensor.div_,
+    torch.Tensor.dot,
+    torch.Tensor.eig,
+    torch.Tensor.equal,
+    torch.Tensor.exp_,
+    torch.Tensor.fill_,
+    torch.Tensor.flip,
+    torch.Tensor.fliplr,
+    torch.Tensor.flipud,
+    torch.Tensor.floor_divide,
+    torch.Tensor.fmod_,
+    torch.Tensor.frexp,
+    torch.Tensor.geqrf,
+    torch.Tensor.histc,
+    torch.Tensor.histogram,
+    torch.Tensor.hypot_,
+    torch.Tensor.imag.__get__,
+    torch.Tensor.index_copy_,
+    torch.Tensor.index_put_,
+    torch.Tensor.index_select,
+    torch.Tensor.inverse,
+    torch.Tensor.is_nonzero,
+    torch.Tensor.is_set_to,
+    torch.Tensor.isclose,
+    torch.Tensor.isfinite,
+    torch.Tensor.isinf,
+    torch.Tensor.isnan,
+    torch.Tensor.isreal,
+    torch.Tensor.istft,
+    torch.Tensor.kthvalue,
+    torch.Tensor.lerp_,
+    torch.Tensor.log10_,
+    torch.Tensor.log2_,
+    torch.Tensor.log_,
+    torch.Tensor.logcumsumexp,
+    torch.Tensor.logdet,
+    torch.Tensor.logical_and,
+    torch.Tensor.logical_not,
+    torch.Tensor.logical_or,
+    torch.Tensor.logical_xor,
+    torch.Tensor.logit,
+    torch.Tensor.logit_,
+    torch.Tensor.logsumexp,
+    torch.Tensor.lu_solve,
+    torch.Tensor.masked_fill_,
+    torch.Tensor.masked_scatter_,
+    torch.Tensor.masked_select,
+    torch.Tensor.matmul,
+    torch.Tensor.matrix_exp,
+    torch.Tensor.matrix_power,
+    torch.Tensor.max,
+    torch.Tensor.median,
+    torch.Tensor.min,
+    torch.Tensor.mode,
+    torch.Tensor.msort,
+    torch.Tensor.mul_,
+    torch.Tensor.multinomial,
+    torch.Tensor.mvlgamma,
+    torch.Tensor.mvlgamma_,
+    torch.Tensor.nan_to_num,
+    torch.Tensor.nan_to_num_,
+    torch.Tensor.nanmean,
+    torch.Tensor.nanmedian,
+    torch.Tensor.nanquantile,
+    torch.Tensor.nansum,
+    torch.Tensor.narrow,
+    torch.Tensor.neg_,
+    torch.Tensor.nonzero,
+    torch.Tensor.norm,
+    torch.Tensor.normal_,
+    torch.Tensor.orgqr,
+    torch.Tensor.ormqr,
+    torch.Tensor.pinverse,
+    torch.Tensor.prod,
+    torch.Tensor.qr,
+    torch.Tensor.quantile,
+    torch.Tensor.real.__get__,
+    torch.Tensor.reciprocal_,
+    torch.Tensor.remainder_,
+    torch.Tensor.repeat,
+    torch.Tensor.repeat_interleave,
+    torch.Tensor.roll,
+    torch.Tensor.rot90,
+    torch.Tensor.rsqrt_,
+    torch.Tensor.scatter_,
+    torch.Tensor.scatter_add_,
+    torch.Tensor.share_memory_,
+    torch.Tensor.sigmoid_,
+    torch.Tensor.sin_,
+    torch.Tensor.sinc_,
+    torch.Tensor.sinh_,
+    torch.Tensor.solve,
+    torch.Tensor.sort,
+    torch.Tensor.sqrt_,
+    torch.Tensor.square_,
+    torch.Tensor.std,
+    torch.Tensor.stft,
+    torch.Tensor.sub_,
+    torch.Tensor.symeig,
+    torch.Tensor.take,
+    torch.Tensor.tan_,
+    torch.Tensor.tanh_,
+    torch.Tensor.to_mkldnn,
+    torch.Tensor.to_sparse,
+    torch.Tensor.to_sparse_csr,
+    torch.Tensor.trace,
+    torch.Tensor.true_divide_,
+    torch.Tensor.unfold,
+    torch.Tensor.unique,
+    torch.Tensor.unique_consecutive,
+    torch.Tensor.var,
+    torch.Tensor.vdot,
+    torch.Tensor.where,
+    torch._VF.unique_dim,
+    torch._add_relu,
+    torch._aminmax,
+    torch._assert_async,
+    torch._masked_softmax,
+    torch._unique,
+    torch._unique2,
+    torch.abs,
+    torch.absolute,
+    torch.acos,
+    torch.acosh,
+    torch.add,  # this one is weird, it should work...
+    torch.addbmm,
+    torch.addcdiv,
+    torch.addcmul,
+    torch.addmm,
+    torch.addmv,
+    torch.addr,
+    torch.allclose,
+    torch.angle,
+    torch.argsort,
+    torch.argwhere,
+    torch.asin,
+    torch.asinh,
+    torch.atan,
+    torch.atan2,
+    torch.atanh,
+    torch.baddbmm,
+    torch.bernoulli,
+    torch.bincount,
+    torch.bmm,
+    torch.bucketize,
+    torch.cat,
+    torch.cholesky,
+    torch.cholesky_inverse,
+    torch.cholesky_solve,
+    torch.clamp,
+    torch.clip,
+    torch.column_stack,
+    torch.combinations,
+    torch.complex,
+    torch.conj_physical,
+    torch.corrcoef,
+    torch.cos,
+    torch.cosh,
+    torch.count_nonzero,
+    torch.cov,
+    torch.cross,
+    torch.cummax,
+    torch.cummin,
+    torch.cumprod,
+    torch.cumsum,
+    torch.cumulative_trapezoid,
+    torch.det,
+    torch.diag,
+    torch.diagflat,
+    torch.diagonal_scatter,
+    torch.diff,
+    torch.dist,
+    torch.div,
+    torch.divide,
+    torch.dot,
+    torch.dstack,
+    torch.eig,
+    torch.equal,
+    torch.exp,
+    torch.eye,
+    torch.fft.fft,
+    torch.fft.fft2,
+    torch.fft.fftn,
+    torch.fft.fftshift,
+    torch.fft.hfft,
+    torch.fft.hfft2,
+    torch.fft.hfftn,
+    torch.fft.ifft,
+    torch.fft.ifft2,
+    torch.fft.ifftn,
+    torch.fft.ifftshift,
+    torch.fft.ihfft,
+    torch.fft.ihfft2,
+    torch.fft.ihfftn,
+    torch.fft.irfft,
+    torch.fft.irfft2,
+    torch.fft.irfftn,
+    torch.fft.rfft,
+    torch.fft.rfft2,
+    torch.fft.rfftn,
+    torch.fill_,
+    torch.flip,
+    torch.fliplr,
+    torch.flipud,
+    torch.floor_divide,
+    torch.fmax,
+    torch.fmin,
+    torch.fmod,
+    torch.frexp,
+    torch.functional.cartesian_prod,
+    torch.functional.cdist,
+    torch.functional.einsum,
+    torch.functional.istft,
+    torch.functional.lu,
+    torch.functional.norm,
+    torch.functional.pca_lowrank,
+    torch.functional.stft,
+    torch.functional.svd_lowrank,
+    torch.functional.tensordot,
+    torch.functional.unique,
+    torch.functional.unique_consecutive,
+    torch.geqrf,
+    torch.gradient,
+    torch.group_norm,
+    torch.histc,
+    torch.histogram,
+    torch.histogramdd,
+    torch.hstack,
+    torch.hypot,
+    torch.imag,
+    torch.index_copy,
+    torch.index_put,
+    torch.index_select,
+    torch.inner,
+    torch.inverse,
+    torch.isfinite,
+    torch.isinf,
+    torch.isnan,
+    torch.isreal,
+    torch.kron,
+    torch.kthvalue,
+    torch.layer_norm,
+    torch.ldexp,
+    torch.lerp,
+    torch.linalg.cholesky,
+    torch.linalg.cholesky_ex,
+    torch.linalg.cond,
+    torch.linalg.cross,
+    torch.linalg.det,
+    torch.linalg.eig,
+    torch.linalg.eigh,
+    torch.linalg.eigvals,
+    torch.linalg.eigvalsh,
+    torch.linalg.householder_product,
+    torch.linalg.inv,
+    torch.linalg.lstsq,
+    torch.linalg.lu_factor,
+    torch.linalg.lu_factor_ex,
+    torch.linalg.matmul,
+    torch.linalg.matrix_exp,
+    torch.linalg.matrix_norm,
+    torch.linalg.matrix_power,
+    torch.linalg.matrix_rank,
+    torch.linalg.multi_dot,
+    torch.linalg.norm,
+    torch.linalg.pinv,
+    torch.linalg.qr,
+    torch.linalg.slogdet,
+    torch.linalg.solve,
+    torch.linalg.solve_triangular,
+    torch.linalg.svd,
+    torch.linalg.svdvals,
+    torch.linalg.tensorinv,
+    torch.linalg.tensorsolve,
+    torch.linalg.vector_norm,
+    torch.log,
+    torch.log10,
+    torch.log2,
+    torch.logaddexp,
+    torch.logaddexp2,
+    torch.logcumsumexp,
+    torch.logdet,
+    torch.logical_and,
+    torch.logical_not,
+    torch.logical_or,
+    torch.logical_xor,
+    torch.logit,
+    torch.logsumexp,
+    torch.lu_solve,
+    torch.lu_unpack,
+    torch.masked_fill,
+    torch.masked_scatter,
+    torch.masked_select,
+    torch.matmul,
+    torch.matrix_exp,
+    torch.matrix_power,
+    torch.max,
+    torch.maximum,
+    torch.median,
+    torch.min,
+    torch.minimum,
+    torch.mode,
+    torch.msort,
+    torch.mul,
+    torch.multinomial,
+    torch.mv,
+    torch.mvlgamma,
+    torch.nan_to_num,
+    torch.nanmean,
+    torch.nanmedian,
+    torch.nanquantile,
+    torch.nansum,
+    torch.neg,
+    torch.nn.functional.adaptive_avg_pool1d,
+    torch.nn.functional.adaptive_avg_pool2d,
+    torch.nn.functional.adaptive_avg_pool3d,
+    torch.nn.functional.batch_norm,
+    torch.nn.functional.binary_cross_entropy,
+    torch.nn.functional.binary_cross_entropy_with_logits,
+    torch.nn.functional.channel_shuffle,
+    torch.nn.functional.conv1d,
+    torch.nn.functional.conv2d,
+    torch.nn.functional.conv3d,
+    torch.nn.functional.conv_transpose1d,
+    torch.nn.functional.conv_transpose2d,
+    torch.nn.functional.conv_transpose3d,
+    torch.nn.functional.cosine_embedding_loss,
+    torch.nn.functional.cosine_similarity,
+    torch.nn.functional.cross_entropy,
+    torch.nn.functional.ctc_loss,
+    torch.nn.functional.dropout,
+    torch.nn.functional.dropout2d,
+    torch.nn.functional.embedding,
+    torch.nn.functional.embedding_bag,
+    torch.nn.functional.feature_alpha_dropout,
+    torch.nn.functional.fold,
+    torch.nn.functional.gaussian_nll_loss,
+    torch.nn.functional.grid_sample,
+    torch.nn.functional.group_norm,
+    torch.nn.functional.hardswish,
+    torch.nn.functional.hardtanh,
+    torch.nn.functional.hinge_embedding_loss,
+    torch.nn.functional.huber_loss,
+    torch.nn.functional.instance_norm,
+    torch.nn.functional.interpolate,
+    torch.nn.functional.kl_div,
+    torch.nn.functional.l1_loss,
+    torch.nn.functional.layer_norm,
+    torch.nn.functional.linear,
+    torch.nn.functional.local_response_norm,
+    torch.nn.functional.logsigmoid,
+    torch.nn.functional.lp_pool1d,
+    torch.nn.functional.lp_pool2d,
+    torch.nn.functional.margin_ranking_loss,
+    torch.nn.functional.max_pool3d,
+    torch.nn.functional.max_pool3d_with_indices,
+    torch.nn.functional.max_unpool1d,
+    torch.nn.functional.max_unpool2d,
+    torch.nn.functional.max_unpool3d,
+    torch.nn.functional.mse_loss,
+    torch.nn.functional.multi_head_attention_forward,
+    torch.nn.functional.multi_margin_loss,
+    torch.nn.functional.multilabel_margin_loss,
+    torch.nn.functional.multilabel_soft_margin_loss,
+    torch.nn.functional.nll_loss,
+    torch.nn.functional.normalize,
+    torch.nn.functional.one_hot,
+    torch.nn.functional.pad,
+    torch.nn.functional.pairwise_distance,
+    torch.nn.functional.pdist,
+    torch.nn.functional.poisson_nll_loss,
+    torch.nn.functional.prelu,
+    torch.nn.functional.relu,
+    torch.nn.functional.relu6,
+    torch.nn.functional.rrelu, 
+    torch.nn.functional.smooth_l1_loss,
+    torch.nn.functional.softmin,
+    torch.nn.functional.softsign,
+    torch.nn.functional.tanhshrink,
+    torch.nn.functional.triplet_margin_loss,
+    torch.nn.functional.triplet_margin_with_distance_loss,
+    torch.nn.functional.unfold,
+    torch.nonzero,
+    torch.normal,
+    torch.orgqr,
+    torch.ormqr,
+    torch.outer,
+    torch.pinverse,
+    torch.polar,
+    torch.prod,
+    torch.qr,
+    torch.quantile,
+    torch.quantize_per_tensor,
+    torch.rand_like,
+    torch.randn_like,
+    torch.real,
+    torch.reciprocal,
+    torch.relu,
+    torch.remainder,
+    torch.repeat_interleave,
+    torch.rnn_relu_cell,
+    torch.roll,
+    torch.rot90,
+    torch.rsqrt,
+    torch.rsub,
+    torch.scatter,
+    torch.scatter_add,
+    torch.searchsorted,
+    torch.select_scatter,
+    torch.sgn,
+    torch.sigmoid,
+    torch.sin,
+    torch.sinc,
+    torch.sinh,
+    torch.slice_scatter,
+    torch.Tensor.relu,
+    torch.solve,
+    torch.sort,
+    torch.special.i1,
+    torch.special.i1e,
+    torch.special.logit,
+    torch.special.logsumexp,
+    torch.special.multigammaln,
+    torch.fused_moving_avg_obs_fake_quant,
+    torch.batch_norm,
+    torch.binary_cross_entropy_with_logits,
+    torch.instance_norm,
+    torch.as_tensor,
+    torch.slogdet,
+    torch._dirichlet_grad,
+    torch._sample_dirichlet,
+    torch.binomial,
+    torch.full,
+    torch.poisson,
+    torch._standard_gamma,
+    torch.spmm,
+    torch.quantize_per_channel,
+    torch.sqrt,
+    torch.square,
+    torch.Tensor.logical_or_,
+    torch.Tensor.logical_xor_,
+    torch.Tensor.addcmul,
+    torch.Tensor.logical_and_,
+    torch.stack,
+    torch.std,
+    torch.std_mean,
+    torch.sub,
+    torch.svd,
+    torch.symeig,
+    torch.take,
+    torch.tan,
+    torch.tanh,
+    torch.tensor,
+    torch.threshold,
+    torch.trace,
+    torch.trapezoid,
+    torch.trapz,
+    torch.triangular_solve,
+    torch.true_divide,
+    torch.var,
+    torch.var_mean,
+    torch.vdot,
+    torch.view_as_complex,
+    torch.view_as_real,
+    torch.vstack,
+    torch.where,
+    # storage is funny business
+    torch.Tensor.storage,
+    torch.Tensor.storage_type,
+    # These are known not to work and are fast-pathed out to
+    # avoid the slowdown induced by C++ exception throwing
+    torch.Tensor.cpu,
+    torch.Tensor.__bool__,
+    torch.Tensor.__int__,
+    torch.isclose,
+    torch.Tensor.to,
+    torch.Tensor.item,
+    # Stuff that's not worth doing
+    torch.Tensor.requires_grad.__get__,
+    torch.Tensor.requires_grad.__set__,
+    torch.Tensor.data.__get__,
+    torch.Tensor.data.__set__,
+    # These perturb RNG and so should not be run
+    torch.randint,
+    torch.randn,
+    # TODO: these should raise NotImplementedError, but raises a
+    # different error
+    torch.Tensor.new,
+    torch.Tensor.numpy,
+    torch.Tensor.__array__,
+    torch.Tensor.__dlpack_device__,
+    torch.Tensor.__dlpack__,
+    torch.to_dlpack,
+    # TODO: these probably aren't registered dispatcher correctly
+    torch.fbgemm_pack_gemm_matrix_fp16,
+    torch.fbgemm_linear_fp16_weight,
+    torch._grid_sampler_2d_cpu_fallback,  # WAT
+    torch._nnpack_spatial_convolution,
+    torch.lstm,
+    torch.Tensor.conj_physical_,
+    # This is suspicious
+    torch.nn.functional.max_pool1d,
+    # TODO: our conversion to meta is not accurate enough (doesn't
+    # preserve storage_offset, e.g.)
+    torch.Tensor.as_strided,
+    # TODO: segfaults
+    torch.Tensor.type,
+    # TODO: IDK what's up with these.  TestTorch.test_sobolengine_bounds
+    torch._sobol_engine_initialize_state_,
+    torch._sobol_engine_draw,
+    torch._sobol_engine_scramble_,
+    torch._sobol_engine_ff_,
+    # TODO: maybe we can do this?  need to be tricky
+    torch.tensor_split,
+    torch.Tensor.tensor_split,
+    # TODO: this seems wrong; also it's structured, weird
+    torch.Tensor.index_add_,
+    torch.index_add,
+    torch.Tensor.index_add,
+    # TODO: we're incapable of cloning the history, so this won't work
+    torch.autograd.grad,
+    # TODO: sparse
+    torch.sparse_coo_tensor,
+    # TODO: these need to get fixed
+    torch._pack_padded_sequence,
+    torch._pad_packed_sequence,
+    # need to be a leaf for this to work
+    torch.Tensor.__deepcopy__,
+}
+
+skipped = set()
+
+def print_skipped():
+    for s in skipped:
+        print(f"{torch.overrides.resolve_name(s) or s},")
+
+import atexit
+atexit.register(print_skipped)
+
 class CrossRefMode(torch.overrides.TorchFunctionMode):
+    def __init__(self, test_case):
+        self.test_case = test_case
+
     def __torch_function__(self, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
+
+        hit = False
+
+        # Doesn't actually return a storage
+        @functools.cache
+        def meta_storage(s):
+            return torch.empty(s.size(), dtype=s.dtype, device='meta')
+
+        def safe_is_leaf(t):
+            try:
+                return t.is_leaf
+            except RuntimeError:
+                # inference mode can trigger this
+                return False
+
+        @functools.cache
+        def meta_tensor(t):
+            with torch.inference_mode(t.is_inference()):
+                s = meta_storage(t.storage())
+                is_leaf = safe_is_leaf(t) 
+                if is_leaf or not t._is_view():
+                    r = torch.empty(
+                        (0,), dtype=t.dtype, device='meta'
+                    )
+                    torch._C._set_storage_via_tensor(
+                        r, s, t.storage_offset(), t.size(), t.stride()
+                    )
+                    r.requires_grad = t.requires_grad
+                    if not is_leaf and t.requires_grad:
+                        with torch.enable_grad():
+                            r = r.clone()
+                else:
+                    base = torch.empty(
+                        (0,), dtype=t.dtype, device='meta'
+                    )
+                    torch._C._set_storage_via_tensor(
+                        base, s, 0, s.size(), (1,)
+                    )
+                    base.requires_grad = t.requires_grad
+                    with torch.enable_grad():
+                        if t._is_view() and not safe_is_leaf(t._base):
+                            base = base.clone()
+                        r = base.as_strided(t.size(), t.stride(), t.storage_offset())
+                torch._C._set_conj(r, t.is_conj())
+                torch._C._set_neg(r, t.is_neg())
+            return r
+
+        def to_meta(t):
+            nonlocal hit
+            if isinstance(t, torch.nn.parameter.UninitializedBuffer):
+                return t
+            # TODO: zero tensors?
+            elif type(t) is torch.Tensor or type(t) is torch.nn.Parameter:
+                if t.is_sparse or t.is_sparse_csr or t.device.type == "lazy":
+                    hit = True
+                    return t.to("meta")
+                elif t.is_complex():
+                    # TODO: get rid of this, storage stuf should work, just
+                    # need to make storage on complex not complain
+                    hit = True
+                    return t.to("meta")
+                elif not any([t.is_mkldnn, t.is_quantized, t.is_nested]):
+                    hit = True
+                    r = meta_tensor(t)
+                    if type(t) is torch.nn.Parameter:
+                        r = torch.nn.Parameter(r, requires_grad=r.requires_grad)
+                    return r
+                return t
+            elif isinstance(t, torch.Tensor):
+                # It's some subclass; convert it to meta and pray (lol)
+                hit = True
+                return t.to("meta")
+            else:
+                return t
+
+        do_meta = func not in meta_exclude_set and not torch.jit.is_tracing()
+
+        if do_meta:
+            try:
+                # TODO: technically, the meta conversions should work
+                # unconditionally, but currently they don't work on
+                # sparse tensors
+
+                # Don't convert factory functions to meta, if the size
+                # is a tensor we need a non-meta tensor to actually construct
+                # it
+                if func not in {torch.ones, torch.empty}:
+                    meta_args = tree_map(to_meta, args)
+                else:
+                    meta_args = args
+                meta_kwargs = tree_map(to_meta, kwargs)
+            except NotImplementedError:
+                do_meta = False
+            except Exception as e:
+                raise RuntimeError(
+                    f"failed to convert args to meta; "
+                    f"originally (*{args}, **{kwargs})") from e
+
+        do_meta = do_meta and hit
+
         r = func(*args, **kwargs)
+
+        # TODO: also handle cases where func raise an exception
+
+        if do_meta:
+            try:
+                # suppress warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    meta_r = func(*meta_args, **meta_kwargs)
+            except NotImplementedError:
+                skipped.add(func)
+                pass
+            except Exception as e:
+                raise RuntimeError(f"""\
+failed to run:
+  {torch.overrides.resolve_name(func) or func}(
+    *{meta_args},
+    **{meta_kwargs}
+  )""") from e
+            else:
+                pass
+                # self.test_case.assertEqual(meta_r.dtype, r.dtype)
+
         return r
 
 # Determine whether to enable cuda memory leak check.
@@ -1858,7 +2592,7 @@ class TestCase(expecttest.TestCase):
     def run(self, result=None):
         with contextlib.ExitStack() as stack:
             if TEST_WITH_CROSSREF:
-                stack.enter_context(torch.overrides.push_torch_function_mode(CrossRefMode))
+                stack.enter_context(torch.overrides.push_torch_function_mode(partial(CrossRefMode, self)))
             num_runs = MAX_NUM_RETRIES + 1 if RETRY_TEST_CASES else 1
             self._run_with_retry(result=result, num_runs_left=num_runs, report_only=not OVERRIDE_FLAKY_SIGNAL)
 
@@ -2136,6 +2870,8 @@ class TestCase(expecttest.TestCase):
         # and deserves detailed investigation
         return self.assertEqual(*args, exact_dtype=False, **kwargs)
 
+    # This is a speed optimization for crossref tests
+    @torch.overrides._no_torch_function_mode()
     def assertEqual(
             self,
             x,
